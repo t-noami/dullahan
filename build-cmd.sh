@@ -205,12 +205,16 @@ case "$AUTOBUILD_PLATFORM" in
         lipo -create -output $stage/lib/release/libdullahan.a "$stage/build_x86_64/Release/libdullahan.a" "$stage/build_arm64/Release/libdullahan.a"
         cp "$dullahan_source_dir/dullahan.h" "$stage/include/cef/"
         cp "$dullahan_source_dir/dullahan_version.h" "$stage/include/cef/"
-        cp -R "$stage/build_x86_64/Release/DullahanHelper.app" "$stage/lib/release"
-
-        cp -R "$stage/build_x86_64/Release/DullahanHelper (Alerts).app" "$stage/lib/release/DullahanHelper (Alerts).app"
-        cp -R "$stage/build_x86_64/Release/DullahanHelper (GPU).app" "$stage/lib/release/DullahanHelper (GPU).app"
-        cp -R "$stage/build_x86_64/Release/DullahanHelper (Renderer).app" "$stage/lib/release/DullahanHelper (Renderer).app"
-        cp -R "$stage/build_x86_64/Release/DullahanHelper (Plugin).app" "$stage/lib/release/DullahanHelper (Plugin).app"
+        for helper_app in \
+            "DullahanHelper.app" \
+            "DullahanHelper (Alerts).app" \
+            "DullahanHelper (GPU).app" \
+            "DullahanHelper (Renderer).app" \
+            "DullahanHelper (Plugin).app";
+        do
+            rm -rf "$stage/lib/release/$helper_app"
+            cp -R "$stage/build_x86_64/Release/$helper_app" "$stage/lib/release/$helper_app"
+        done
 
         lipo -create "$stage/build_x86_64/Release/DullahanHelper.app/Contents/MacOS/DullahanHelper" "$stage/build_arm64/Release/DullahanHelper.app/Contents/MacOS/DullahanHelper" -output "$stage/lib/release/DullahanHelper.app/Contents/MacOS/DullahanHelper"
         lipo -create "$stage/build_x86_64/Release/DullahanHelper (Alerts).app/Contents/MacOS/DullahanHelper (Alerts)" "$stage/build_arm64/Release/DullahanHelper (Alerts).app/Contents/MacOS/DullahanHelper (Alerts)" -output "$stage/lib/release/DullahanHelper (Alerts).app/Contents/MacOS/DullahanHelper (Alerts)"
