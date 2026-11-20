@@ -229,8 +229,7 @@ case "$AUTOBUILD_PLATFORM" in
         lipo -create "$cef_no_wrapper_dir/x86_64/Release/Chromium Embedded Framework.framework/Chromium Embedded Framework" "$cef_no_wrapper_dir/arm64/Release/Chromium Embedded Framework.framework/Chromium Embedded Framework" -output "$stage/lib/release/Chromium Embedded Framework.framework/Chromium Embedded Framework"
 
         lipo -create "$cef_no_wrapper_dir/x86_64/Release/Chromium Embedded Framework.framework/Libraries/libcef_sandbox.dylib" "$cef_no_wrapper_dir/arm64/Release/Chromium Embedded Framework.framework/Libraries/libcef_sandbox.dylib" -output "$stage/lib/release/Chromium Embedded Framework.framework/Libraries/libcef_sandbox.dylib"
-        lipo -create "$cef_no_wrapper_dir/x86_64/Release/Chromium Embedded Framework.framework/Libraries/libEGL.dylib" "$cef_no_wrapper_dir/arm64/Release/Chromium Embedded Framework.framework/Libraries/libEGL.dylib" -output "$stage/lib/release/Chromium Embedded Framework.framework/Libraries/libEGL.dylib"
-        lipo -create "$cef_no_wrapper_dir/x86_64/Release/Chromium Embedded Framework.framework/Libraries/libGLESv2.dylib" "$cef_no_wrapper_dir/arm64/Release/Chromium Embedded Framework.framework/Libraries/libGLESv2.dylib" -output "$stage/lib/release/Chromium Embedded Framework.framework/Libraries/libGLESv2.dylib"
+        lipo -create "$cef_no_wrapper_dir/x86_64/Release/Chromium Embedded Framework.framework/Libraries/libvulkan.dylib" "$cef_no_wrapper_dir/arm64/Release/Chromium Embedded Framework.framework/Libraries/libvulkan.dylib" -output "$stage/lib/release/Chromium Embedded Framework.framework/Libraries/libvulkan.dylib"
         lipo -create "$cef_no_wrapper_dir/x86_64/Release/Chromium Embedded Framework.framework/Libraries/libvk_swiftshader.dylib" "$cef_no_wrapper_dir/arm64/Release/Chromium Embedded Framework.framework/Libraries/libvk_swiftshader.dylib" -output "$stage/lib/release/Chromium Embedded Framework.framework/Libraries/libvk_swiftshader.dylib"
 
         # Set up snapshot blobs for universal
@@ -284,22 +283,52 @@ case "$AUTOBUILD_PLATFORM" in
         opts="-m$AUTOBUILD_ADDRSIZE $LL_BUILD_RELEASE"
         plainopts="$(remove_cxxstd $opts)"
 
+        # build the CEF c->C++ wrapper "libcef_dll_wrapper" first
+        mkdir -p "$cef_no_wrapper_build_dir"
+        pushd "$cef_no_wrapper_build_dir"
+            cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                  -DCMAKE_C_FLAGS="$plainopts" \
+                  -DCMAKE_CXX_FLAGS="$opts" \
+                  $(cmake_cxx_standard $opts) \
+                  "$cef_no_wrapper_dir"
+            cmake --build . --target libcef_dll_wrapper --parallel $AUTOBUILD_CPU_COUNT
+        popd
+
         cmake -S . -B stage/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=stage \
             -DCMAKE_C_FLAGS="$plainopts" \
             -DCMAKE_CXX_FLAGS="$opts" \
-            $(cmake_cxx_standard $opts) \
-            -DUSE_SPOTIFY_CEF=TRUE -DSPOTIFY_CEF_URL=https://automated-builds-secondlife-com.s3.us-east-1.amazonaws.com/gh/secondlife/cef/cef_binary_139.0.40%2Bg465474a%2Bchromium-139.0.7258.139_linux64_minimal.tar.bz2
+            -DCEF_WRAPPER_DIR="$cef_no_wrapper_dir" \
+            -DCEF_WRAPPER_BUILD_DIR="$cef_no_wrapper_build_dir" \
+            $(cmake_cxx_standard $opts)
 
         cmake --build stage/build
-        cmake --install stage/build
 
-        strip stage/lib/release/libcef.so
-        rm stage/bin/release/*.bin
-        rm stage/bin/release/*.so*
-        rm stage/bin/release/*.json
-        rm stage/lib/release/chrome-sandbox
+        mkdir -p "$stage/lib/release"
+        mkdir -p "$stage/bin/release"
+        mkdir -p "$stage/resources"
+
+        # Dullahan build outputs
+        cp stage/build/libdullahan.a "$stage/lib/release/"
+        cp stage/build/dullahan_host "$stage/bin/release/"
+
+        # CEF libraries, stripping libcef.so
+        cp "$cef_no_wrapper_dir/Release/libcef.so" "$stage/lib/release/"
+        cp "$cef_no_wrapper_build_dir/libcef_dll_wrapper/libcef_dll_wrapper.a" "$stage/lib/release/"
+        strip "$stage/lib/release/libcef.so"
+
+        # CEF run time binaries and libraries
+        cp "$cef_no_wrapper_dir/Release/chrome-sandbox" "$stage/bin/release/"
+        cp "$cef_no_wrapper_dir/Release/libEGL.so" "$stage/lib/release/"
+        cp "$cef_no_wrapper_dir/Release/libGLESv2.so" "$stage/lib/release/"
+        cp "$cef_no_wrapper_dir/Release/libvk_swiftshader.so" "$stage/lib/release/"
+        cp "$cef_no_wrapper_dir/Release/libvulkan.so.1" "$stage/lib/release/"
+        cp "$cef_no_wrapper_dir/Release/v8_context_snapshot.bin" "$stage/lib/release/"
+        cp "$cef_no_wrapper_dir/Release/vk_swiftshader_icd.json" "$stage/lib/release/"
+
+        # CEF resources
+        cp -R "$cef_no_wrapper_dir/Resources/"* "$stage/resources/"
 
         g++ -std=c++17  -I "${cef_no_wrapper_dir}/include"  -I "${dullahan_source_dir}" -o "$stage/version"  "$top/tools/autobuild_version.cpp"
 
