@@ -79,6 +79,24 @@ void openglExample::handleKeyEvent(int key, int scancode, int action, int mods)
         {
             mDullahan->requestExit();
         }
+        else if (mods & GLFW_MOD_CONTROL)
+        {
+            if (key >= '1' && key <= '9')
+            {
+                std::ostringstream cmd("fromCPP", std::ios::ate);
+                cmd << "(";
+                cmd << "{ ";
+                cmd << "name: 'Key-" + std::to_string(key - '0') << "'";
+                cmd << ", ";
+                cmd << "id: '" + std::to_string(key - '0') << "'";
+                cmd << ", ";
+                cmd << "content : 'Payload for key " + std::to_string(key - '0') << "'";
+                cmd << " }";
+                cmd << ");";
+                std::cout << "--> cmd.str(): " << cmd.str() << std::endl;
+                mDullahan->executeJavaScript(cmd.str());
+            }
+        }
     }
 }
 
@@ -311,7 +329,8 @@ bool openglExample::init()
 
         mDullahan->setOnPageChangedCallback(std::bind(&openglExample::onPageChanged, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5));
         mDullahan->setOnRequestExitCallback(std::bind(&openglExample::onRequestExitCallback, this));
-
+        mDullahan->setOnJStoCPPMsgCallback(std::bind(&openglExample::onJStoCPPMsgCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+        
         mDullahan->navigate(mHomeUrl);
     }
 
@@ -461,6 +480,12 @@ void openglExample::onPageChanged(const unsigned char* pixels, int x, int y, con
 void openglExample::onRequestExitCallback()
 {
     glfwSetWindowShouldClose(mWindow, GLFW_TRUE);
+}
+
+std::string openglExample::onJStoCPPMsgCallback(const std::string id, const std::string msg, const std::string frame_url)
+{
+    std::cout << "Received message with ID: " << id << " from JavaScript: " << msg << " (origin: " << frame_url << ")" << std::endl;
+    return "Message received loud and clear by C++!";
 }
 
 void openglExample::initUI()
@@ -624,7 +649,8 @@ void openglExample::updateUI()
         "chrome://version",
         "https://sl-viewer-media-system.s3.amazonaws.com/bookmarks/index.html",
         "https://viewer-login.agni.lindenlab.com/",
-        "https://secondlife.com"
+        "https://secondlife.com",
+        "https://sl-viewer-media-system.s3.amazonaws.com/apps/v8-msg/index.html",
     };
     static const char* current_item = "Select a bookmark";
     ImGui::SetNextItemWidth(main_viewport->Size.x);

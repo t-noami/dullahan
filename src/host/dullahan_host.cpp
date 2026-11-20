@@ -27,6 +27,141 @@
 #define NOMINMAX
 
 #include "cef_app.h"
+#include "cef_scheme.h"
+
+#include "../dullahan_embed_scheme.h"
+
+#include <string>
+
+namespace
+{
+    bool url_is_embed(const std::string& url)
+    {
+        static const std::string prefix(kEmbedSchemePrefix);
+        if (url.size() < prefix.size()) return false;
+        // Scheme comparison is case-insensitive.
+        for (size_t i = 0; i < prefix.size(); ++i)
+        {
+            if (ascii_tolower(url[i]) != prefix[i]) return false;
+        }
+        return true;
+    }
+}
+
+// Shared by Windows and Mac sub-process entry points
+class JSONtoCPPHandler : public CefV8Handler
+{
+    public:
+        JSONtoCPPHandler(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame) :
+            // Save the browser + frame references from OnContextCreated()
+            // for later use in IPC communication. The frame reference is used
+            // so the browser process can identify which document originated
+            // each message (for embed:// origin checks).
+            mBrowser(browser),
+            mFrame(frame)
+        {
+        }
+
+        bool Execute(const CefString& name,
+                     CefRefPtr<CefV8Value> object,
+                     const CefV8ValueList& arguments,
+                     CefRefPtr<CefV8Value>& retval,
+                     CefString& exception) override
+        {
+            if (name == "JSONtoCPP")
+            {
+                // Check args
+                if (arguments.size() != 2 || ! arguments[0]->IsString() || ! arguments[1]->IsString())
+                {
+                    exception = "JSONtoCPP(json, id) expects two string arguments";
+                    return true;
+                }
+
+                // Send the JSON string to the browser process and return an acknowledgment
+                std::string id = arguments[0]->GetStringValue();
+                std::string json = arguments[1]->GetStringValue();
+                std::string result = DoJSONtoCPP(id, json);
+                retval = CefV8Value::CreateString(result);
+
+                // Indicate we handled the function call, even 
+                // if there was an error in DoJSONtoCPP
+                return true;
+            }
+
+            return false;
+        }
+
+    private:
+        std::string DoJSONtoCPP(const std::string& id, const std::string& json)
+        {
+            // Send the JSON string to the browser process via IPC
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("JSONtoCPP_MSG");
+            CefRefPtr<CefListValue> args = msg->GetArgumentList();
+            args->SetString(0, id);
+            args->SetString(1, json);
+            std::string frame_url = mFrame ? std::string(mFrame->GetURL()) : std::string();
+            args->SetString(2, frame_url);
+            mBrowser->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+
+            // Acknowledge receipt of the JSON string
+            return "{\"ACK\": true}";
+        }
+
+        CefRefPtr<CefBrowser> mBrowser;
+        CefRefPtr<CefFrame> mFrame;
+        IMPLEMENT_REFCOUNTING(JSONtoCPPHandler);
+};
+
+class MyApp : public CefApp,
+              public CefRenderProcessHandler
+{
+public:
+    CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override
+    {
+        return this;
+    }
+
+    // CefApp override. Runs in every process. Must register the embed://
+    // scheme with the same flags as the browser process so Chromium's renderer
+    // treats embed:// documents as a proper (secure) origin.
+    void OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) override
+    {
+        registrar->AddCustomScheme(kEmbedScheme,
+                                   CEF_SCHEME_OPTION_STANDARD |
+                                   CEF_SCHEME_OPTION_SECURE |
+                                   CEF_SCHEME_OPTION_CORS_ENABLED |
+                                   CEF_SCHEME_OPTION_FETCH_ENABLED |
+                                   CEF_SCHEME_OPTION_LOCAL);
+    }
+
+    void OnContextCreated(CefRefPtr<CefBrowser> browser,
+                          CefRefPtr<CefFrame> frame,
+                          CefRefPtr<CefV8Context> context) override
+    {
+        // Only inject the window.JSONtoCPP bridge on trusted embed:// frames.
+        std::string url = frame ? std::string(frame->GetURL()) : std::string();
+        if (!url_is_embed(url))
+        {
+            return;
+        }
+
+        CefRefPtr<CefV8Value> global = context->GetGlobal();
+        CefRefPtr<CefV8Handler> handler = new JSONtoCPPHandler(browser, frame);
+        CefRefPtr<CefV8Value> func = CefV8Value::CreateFunction("JSONtoCPP", handler);
+        global->SetValue("JSONtoCPP", func, V8_PROPERTY_ATTRIBUTE_NONE);
+
+        // Friendly greeting to the browser process to confirm the context was created
+        CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("JSONtoCPP_MSG");
+        CefRefPtr<CefListValue> args = msg->GetArgumentList();
+        args->SetString(0, "INFO");
+        args->SetString(1, "Hello from the OnContextCreated in the sub-process!");
+        args->SetString(2, url);
+        browser->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+    }
+
+private:
+    IMPLEMENT_REFCOUNTING(MyApp);
+};
 
 #ifdef __linux__
 #if defined(NO_STACK_PROTECTOR)
@@ -35,7 +170,8 @@ NO_STACK_PROTECTOR
 int main(int argc, char* argv[])
 {
     CefMainArgs main_args(argc, argv);
-    return CefExecuteProcess(main_args, nullptr, nullptr);
+    const CefRefPtr<MyApp> app = new MyApp();
+    return CefExecuteProcess(main_args, app, nullptr);
 }
 #endif
 #ifdef WIN32
@@ -48,57 +184,6 @@ int main(int argc, char* argv[])
 #pragma warning( disable : 4702)
 #include <thread>
 #include <tlhelp32.h>
-
-/*
-  Nasty hack to stop flash from displaying a popup with "NO SANDBOX"
-  Flashplayer will try to spawn a cmd.exe and echo this message into it, we
-  use a process group to limit the number of processes allowed to 1, thus preventing
-  popup.
-
-  Limitation: NeedsWindows 8 or higher, the viewer already does put SLPlugin (and with that
-  all sub processes) into a job, so all plugin instances get killed when the viewer does exit.
-  Anything before Windows 8 will not allow a process being part of more than one job.
-
-  Using the sandbox would fix this problem, but for using the sandbox the same executable
-  must be used  for browser and all sub processes (see cef_sandbox_win.h); but the viewer
-  uses slplugin.exe and llceflib_host.exe.
-*/
-void enablePPAPIFlashHack(LPSTR lpCmdLine)
-{
-    if (!lpCmdLine)
-    {
-        return;
-    }
-
-    std::string strCmdLine = lpCmdLine;
-
-    std::string strType = "--type=ppapi";
-    std::string::size_type i = strCmdLine.find(strType);
-
-    if (i == std::string::npos)
-    {
-        return;
-    }
-
-    HANDLE hJob = CreateJobObject(nullptr, nullptr);
-    HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, ::GetCurrentProcessId());
-
-    if (!AssignProcessToJobObject(hJob, hProc))
-    {
-        ::CloseHandle(hProc);
-        ::CloseHandle(hJob);
-        return;
-    }
-
-    JOBOBJECT_BASIC_LIMIT_INFORMATION baseLimits = {};
-    baseLimits.LimitFlags = JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-    baseLimits.ActiveProcessLimit = 1;
-
-    SetInformationJobObject(hJob, JobObjectBasicLimitInformation, &baseLimits, sizeof(baseLimits));
-
-    ::CloseHandle(hProc);
-    ::CloseHandle(hJob);
-}
 
 // taken from http://magpcss.org/ceforum/viewtopic.php?f=6&t=15817&start=10#p37820
 // works around a CEF issue (yet to be filed) where the host process is not destroyed
@@ -131,6 +216,7 @@ HANDLE GetParentProcess()
 }
 #endif
 
+
 #if defined(NO_STACK_PROTECTOR)
 NO_STACK_PROTECTOR
 #endif
@@ -149,9 +235,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     CefMainArgs args(GetModuleHandle(nullptr));
 
-    enablePPAPIFlashHack(lpCmdLine);
+    // Create the CefApp instance in the main function to ensure it is available
+    // to CefExecuteProcess() when the sub-process is launched. Creating the CefApp instance
+    const CefRefPtr<MyApp> app = new MyApp();
 
-    return CefExecuteProcess(args, nullptr, nullptr);
+    return CefExecuteProcess(args, app, nullptr);
 }
 #endif
 
@@ -174,7 +262,10 @@ int main(int argc, char* argv[])
     // Provide CEF with command-line arguments.
     CefMainArgs args(argc, argv);
 
+    // Important: same as Windows, CefApp instance should be created in the main function
+    const CefRefPtr<MyApp> app = new MyApp();
+
     // Execute the sub-process.
-    return CefExecuteProcess(args, nullptr, nullptr);
+    return CefExecuteProcess(args, app, nullptr);
 }
 #endif

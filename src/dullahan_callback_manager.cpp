@@ -345,3 +345,19 @@ bool dullahan_callback_manager::onJSBeforeUnloadCallback()
     // default to cancel request if no callback set up
     return false;
 }
+
+void dullahan_callback_manager::setOnJStoCPPMsgCallback(
+    std::function<std::string(const std::string id, const std::string msg, const std::string frame_url)> callback)
+{
+    mOnJStoCPPMsgCallbackFunc = callback;
+}
+
+std::string dullahan_callback_manager::onJStoCPPMsgCallback(const std::string id, const std::string msg, const std::string frame_url)
+{
+    if (mOnJStoCPPMsgCallbackFunc)
+    {
+        return mOnJStoCPPMsgCallbackFunc(id, msg, frame_url);
+    }
+
+    return std::string();
+}
